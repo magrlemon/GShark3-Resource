@@ -1,0 +1,24 @@
+# File produced by Open Asset Import Library (http://www.assimp.sf.net)
+# (assimp v4.1.0)
+
+newmtl engine
+Kd 0.4995050132274628 0.4995050132274628 0.4995050132274628
+Ks 1 1 1
+Ke 0 0 0
+d 1
+Ns 11.52849197387695
+illum 2
+map_Kd l_diesel_diff.dds
+map_Ns l_diesel_spec.dds
+bump l_diesel_ddn.dds
+map_bump l_diesel_ddn.dds
+
+newmtl decals
+Kd 0.5215690135955811 0.5215690135955811 0.5215690135955811
+Ks 1 1 1
+Ke 0 0 0
+d 0.6240000128746033
+Ns 1
+illum 2
+map_Kd train_wagon_dcal.dds
+

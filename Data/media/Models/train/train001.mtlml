@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+
+<material>
+	<albedo color="0.499505 0.499505 0.499505 1.000000" texture="l_diesel_diff.dds"/>
+	<glossiness value="0.271318" texture="l_diesel_spec.dds"/>
+	<height texture="l_diesel_ddn.dds" offset="-0.500000" scale="0.060000"/>
+</material>
+
