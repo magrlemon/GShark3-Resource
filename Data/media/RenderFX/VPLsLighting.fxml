@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<effect>
+	<include name="DeferredRenderingUtil.fxml"/>
+	<include name="Lighting.fxml"/>
+	<include name="Quaternion.fxml"/>
+	<include name="util.fxml"/>
+
+	<parameter type="sampler" name="point_sampler">
+		<state name="filtering" value="min_mag_mip_point"/>
+		<state name="address_u" value="clamp"/>
+		<state name="address_v" value="clamp"/>
+	</parameter>
+
+	<parameter type="texture2D" name="vpls_tex"/>
+	<parameter type="texture2D" name="gbuffer_tex"/>
+	<parameter type="texture2D" name="depth_tex"/>
+	
+	<parameter type="float" name="min_threshold" value="6.10352e-5"/>
+
+	<parameter type="float2" name="vpl_params"/>
+
+	<cbuffer name="per_frame">
+		<parameter type="float4x4" name="view"/>
+		<parameter type="float4x4" name="proj"/>
+
+		<parameter type="float4" name="light_pos_es"/>
+		<parameter type="float4" name="light_color"/>
+		<parameter type="float3" name="light_falloff"/>
+	</cbuffer>
+
+	<cbuffer name="per_vpl">
+		<parameter type="float" name="x_coord"/>
+	</cbuffer>
+
+	<shader>
+		<![CDATA[
+void VPLsLightingInstanceIDVS(float4 pos : POSITION,
+				uint instance_id : SV_InstanceID,
+				out SS_TEXCOORD_TYPE oTc : TEXCOORD0,
+				out float3 oVPLColor : TEXCOORD1,
+				out float4 oViewDir : TEXCOORD2,
+				out float4 oPos : SV_Position)
+{			
+	oViewDir.w = (instance_id + 0.5f) * vpl_params.x;
+
+	float4 albedo_atten = vpls_tex.SampleLevel(point_sampler, float2(oViewDir.w, 0.5f / 4), 0);
+  
+	if (albedo_atten.x < 0)
+	{
+		oVPLColor = -1;
+		oPos = float4(-1, -1, -1, 0);
+		oViewDir = 0;
+		oTc = 0;
+	}
+	else
+	{
+		float4 normal_metalness = vpls_tex.SampleLevel(point_sampler, float2(oViewDir.w, 1.5f / 4), 0);
+		float4 offset_shininess = vpls_tex.SampleLevel(point_sampler, float2(oViewDir.w, 2.5f / 4), 0);
+		float4 rotation = vpls_tex.SampleLevel(point_sampler, float2(oViewDir.w, 3.5f / 4), 0);
+		
+		float3 albedo = albedo_atten.xyz;
+		float atten = albedo_atten.w;
+		float3 normal = normal_metalness.xyz;
+		float metalness = normal_metalness.w;
+		float3 offset = offset_shininess.xyz;
+		float shininess = offset_shininess.w;
+
+		float3 rot_pos = mul(transform_quat(pos.xyz, rotation), (float3x3)view);
+
+		float3 c_diff = DiffuseColor(albedo, metalness);
+		float3 c_spec = SpecularColor(albedo, metalness);
+
+		float3 light_vec = normalize(light_pos_es.xyz - offset);
+		float3 view_vec = normalize(rot_pos);
+		float3 halfway = normalize(light_vec + view_vec);
+
+		oVPLColor = atten * light_color.xyz * (c_diff + SpecularTerm(c_spec, light_vec, halfway, normal, shininess));
+
+		float scale = sqrt(oVPLColor.x + oVPLColor.y + oVPLColor.z) * 10;
+		oViewDir.xyz = rot_pos * scale + offset;
+		oPos = mul(float4(oViewDir.xyz, 1), proj);
+
+		oTc = EncodeSSTexcoord(oPos);
+	}
+}
+
+float4 VPLsLightingPS(
+	SS_TEXCOORD_TYPE ss_tc : TEXCOORD0,
+	float3 vpl_color : TEXCOORD1, float4 view_dir : TEXCOORD2
+	) : SV_Target
+{
+	float2 tc = DecodeSSTexcoord(ss_tc);
+
+	float pixel_depth = depth_tex.Sample(point_sampler, tc).x;
+	float3 color_i = 0;
+	clip(view_dir.z - pixel_depth);
+
+	float3 norm_i = GetNormal(gbuffer_tex.Sample(point_sampler, tc));
+	float3 pos_i = view_dir.xyz * (pixel_depth / view_dir.z);
+
+	float3 pos_j = vpls_tex.SampleLevel(point_sampler, float2(view_dir.w, 2.5f / 4), 0).xyz;
+
+	float3 vij = normalize(pos_j - pos_i);
+	float cos_iv = dot(norm_i, vij);
+	if (cos_iv > 0)
+	{
+		float atten = AttenuationTerm(pos_j, pos_i, float3(1, 0, 1));
+		color_i = cos_iv * atten * vpl_color;
+	}
+
+	color_i.r += min_threshold;
+	return float4(color_i, 1);
+}
+		]]>
+	</shader>
+
+	<technique name="VPLsLightingInstanceID">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="depth_clip_enable" value="false"/>
+			<state name="cull_mode" value="front"/>
+
+			<state name="front_stencil_enable" value="true"/>
+			<state name="front_stencil_func" value="equal"/>
+			<state name="front_stencil_ref" value="0"/>
+			<state name="front_stencil_pass" value="keep"/>
+			<state name="front_stencil_write_mask" value="0"/>
+			<state name="back_stencil_enable" value="true"/>
+			<state name="back_stencil_func" value="equal"/>
+			<state name="back_stencil_ref" value="0"/>
+			<state name="back_stencil_pass" value="keep"/>
+			<state name="back_stencil_write_mask" value="0"/>
+
+			<state name="blend_enable" value="true"/>
+			<state name="blend_op" value="add"/>
+			<state name="src_blend" value="one"/>
+			<state name="dest_blend" value="one"/>
+			<state name="blend_op_alpha" value="add"/>
+			<state name="src_blend_alpha" value="one"/>
+			<state name="dest_blend_alpha" value="zero"/>
+
+			<state name="vertex_shader" value="VPLsLightingInstanceIDVS()"/>
+			<state name="pixel_shader" value="VPLsLightingPS()"/>
+		</pass>
+	</technique>
+</effect>

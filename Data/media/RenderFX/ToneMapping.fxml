@@ -1,0 +1,120 @@
+<?xml version='1.0'?>
+
+<effect>
+	<include name="PostProcess.fxml"/>
+	<include name="util.fxml"/>
+	<include name="ColorSpaceUtil.fxml"/>
+	
+	<macro name="RGB_TO_LUM" value="float3(0.2126f, 0.7152f, 0.0722f)"/>
+
+	<parameter type="sampler" name="linear_sampler">
+		<state name="filtering" value="min_mag_linear_mip_point"/>
+		<state name="address_u" value="clamp"/>
+		<state name="address_v" value="clamp"/>
+	</parameter>
+
+	<parameter type="sampler" name="point_sampler">
+		<state name="filtering" value="min_mag_mip_point"/>
+		<state name="address_u" value="clamp"/>
+		<state name="address_v" value="clamp"/>
+	</parameter>
+
+	<parameter type="texture2D" name="src_tex"/>
+	<parameter type="texture2D" name="lum_tex"/>
+	<parameter type="texture2D" name="bloom_tex"/>
+
+	<parameter type="float" name="bloom_strength"/>
+	<parameter type="float" name="hdr_rescale"/>
+	<parameter type="int" name="blue_shift"/>
+
+	<shader>
+		<![CDATA[
+float EyeAdaption(float lum)
+{
+	return lerp(0.2f, lum, 0.5f);
+}
+
+float3 ACESFilm(float3 x)
+{
+	const float A = 2.51f;
+	const float B = 0.03f;
+	const float C = 2.43f;
+	const float D = 0.59f;
+	const float E = 0.14f;
+
+	return (x * (A * x + B)) / (x * (C * x + D) + E);
+}
+
+float3 ToneMapping(float3 color, float3 blur, float adapted_lum)
+{
+	color += blur * bloom_strength;
+	
+	if (blue_shift)
+	{
+		const float3 BLUE_SHIFT = float3(0.4f, 0.4f, 0.7f);
+		float lum = dot(color, RGB_TO_LUM);
+
+		// martin's modified blue shift
+		color = lerp(lum * BLUE_SHIFT, color, saturate(16.0f * lum));
+	}
+
+#if GRAPHIC_NO_FP_COLOR
+	return color;
+#else
+	float adapted_lum_dest = 2 / (max(0.1f, 1 + 10 * EyeAdaption(adapted_lum)));
+
+	return ACESFilm(adapted_lum_dest * hdr_rescale * color);
+#endif
+}
+
+void ToneMappingVS(float4 pos : POSITION,
+					out float3 oTex : TEXCOORD0,
+					out float4 oPos : SV_Position)
+{
+	oPos = pos;
+
+	oTex.xy = TexCoordFromPos(pos);
+#if GRAPHIC_NO_FP_COLOR
+	float adapted_lum = 1;
+#else
+	float adapted_lum = ReadAFloat(lum_tex.SampleLevel(point_sampler, 0.5f.xx, 0), 16);
+#endif
+	oTex.z = max(0.001f, adapted_lum);
+}
+
+float4 ToneMappingPS(float3 iTex : TEXCOORD0) : SV_Target
+{
+	// For FXAA
+	float3 ldr_rgb = saturate(ToneMapping(src_tex.Sample(linear_sampler, iTex.xy).rgb, bloom_tex.Sample(linear_sampler, iTex.xy).rgb, iTex.z));
+	return float4(ldr_rgb, dot(LinearToSRGB(ldr_rgb), RGB_TO_LUM));
+}
+
+float4 SkipToneMappingPS(float2 tex : TEXCOORD0) : SV_Target
+{
+	// For FXAA
+	float3 ldr_rgb = saturate(src_tex.Sample(linear_sampler, tex.xy).rgb);
+	return float4(ldr_rgb, dot(LinearToSRGB(ldr_rgb), RGB_TO_LUM));
+}
+		]]>
+	</shader>
+
+	<technique name="ToneMapping">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="0"/>
+
+			<state name="vertex_shader" value="ToneMappingVS()"/>
+			<state name="pixel_shader" value="ToneMappingPS()"/>
+		</pass>
+	</technique>
+
+	<technique name="SkipToneMapping">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="0"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="SkipToneMappingPS()"/>
+		</pass>
+	</technique>
+</effect>

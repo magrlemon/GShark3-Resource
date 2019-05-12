@@ -1,0 +1,261 @@
+<?xml version='1.0'?>
+
+<effect>
+	<include name="PostProcess.fxml"/>
+	<include name="util.fxml"/>
+
+	<parameter type="sampler" name="point_sampler">
+		<state name="filtering" value="min_mag_mip_point"/>
+		<state name="address_u" value="clamp"/>
+		<state name="address_v" value="clamp"/>
+	</parameter>
+	<parameter type="sampler" name="bias_neg_1_point_sampler">
+		<state name="mip_map_lod_bias" value="-1"/>
+		<state name="filtering" value="min_mag_mip_point"/>
+		<state name="address_u" value="clamp"/>
+		<state name="address_v" value="clamp"/>
+	</parameter>
+
+	<parameter type="float4" name="near_q_far"/>
+	<parameter type="float4x4" name="inv_proj"/>
+
+	<parameter type="texture2D" name="src_tex"/>
+	<parameter type="texture2DMS" name="src_tex_ms"/>
+
+	<shader>
+		<![CDATA[
+void DepthToLinearVS(float4 pos : POSITION,
+					out float2 oTex : TEXCOORD0,
+					out float3 oViewDir : TEXCOORD1,
+					out float4 oPos : SV_Position)
+{
+	oTex = TexCoordFromPos(pos);
+	oPos = pos;
+	oViewDir = mul(pos, inv_proj).xyz;
+}
+
+float4 DepthToLinearPS(float2 tc : TEXCOORD0, uint sample_index : SV_SampleIndex) : SV_Target
+{
+#if GRAPHIC_EXPLICIT_MULTI_SAMPLE_SUPPORT && MULTI_SAMPLE_INPUT
+	uint width, height, samples;
+	src_tex_ms.GetDimensions(width, height, samples);
+	int2 coord = tc * int2(width, height);
+	float z = src_tex_ms.Load(coord, sample_index).r;
+#else
+	float z = src_tex.Sample(point_sampler, tc).r;
+#endif
+	return WriteAFloat(non_linear_depth_to_linear(z, near_q_far.x, near_q_far.y), near_q_far.w);
+}
+
+float4 DepthToESMPS(float2 tc : TEXCOORD0, float3 view_dir : TEXCOORD1) : SV_Target
+{
+	float dist = non_linear_depth_to_linear(src_tex.Sample(point_sampler, tc).r, near_q_far.x, near_q_far.y);
+	dist *= length(view_dir) / view_dir.z;
+
+	return WriteAFloat(dist, near_q_far.w);
+}
+		]]>
+	</shader>
+
+	<technique name="DepthToLinear">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="DepthToLinearVS()"/>
+			<state name="pixel_shader" value="DepthToLinearPS()"/>
+		</pass>
+	</technique>
+	<technique name="DepthToLinearMS" inherit="DepthToLinear">
+		<macro name="MULTI_SAMPLE_INPUT" value="1"/>
+	</technique>
+
+	<technique name="DepthToESM">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="DepthToLinearVS()"/>
+			<state name="pixel_shader" value="DepthToESMPS()"/>
+		</pass>
+	</technique>
+	
+	<parameter type="float2" name="offset"/>
+	<parameter type="float2" name="tc_scale"/>
+
+	<shader>
+		<![CDATA[
+float4 DepthToMinMaxPS(float2 tc : TEXCOORD0) : SV_Target
+{
+	float z00 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(-offset.x, -offset.y)));
+	float z01 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(+offset.x, -offset.y)));
+	float z10 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(-offset.x, +offset.y)));
+	float z11 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(+offset.x, +offset.y)));
+
+	float min_depth = z00;
+	float max_depth = z00;
+	min_depth = min(min_depth, z01);
+	max_depth = max(max_depth, z01);
+	min_depth = min(min_depth, z10);
+	max_depth = max(max_depth, z10);
+	min_depth = min(min_depth, z11);
+	max_depth = max(max_depth, z11);
+
+	return WriteTwoHalf(float2(min_depth, max_depth));
+}
+
+float4 ReduceMinMaxPS(float2 tc : TEXCOORD0) : SV_Target
+{
+	float2 z00 = ReadTwoHalf(src_tex.Sample(point_sampler, tc * tc_scale + float2(-offset.x, -offset.y)));
+	float2 z01 = ReadTwoHalf(src_tex.Sample(point_sampler, tc * tc_scale + float2(+offset.x, -offset.y)));
+	float2 z10 = ReadTwoHalf(src_tex.Sample(point_sampler, tc * tc_scale + float2(-offset.x, +offset.y)));
+	float2 z11 = ReadTwoHalf(src_tex.Sample(point_sampler, tc * tc_scale + float2(+offset.x, +offset.y)));
+
+	float min_depth = z00.x;
+	float max_depth = z00.y;
+	min_depth = min(min_depth, z01.x);
+	max_depth = max(max_depth, z01.y);
+	min_depth = min(min_depth, z10.x);
+	max_depth = max(max_depth, z10.y);
+	min_depth = min(min_depth, z11.x);
+	max_depth = max(max_depth, z11.y);
+
+	return WriteTwoHalf(float2(min_depth, max_depth));
+}
+
+void DepthToMaxPS(float2 tc : TEXCOORD0,
+		out float4 oColor : SV_Target0,
+		out float oDepth : SV_Depth)
+{
+#if GRAPHIC_EXPLICIT_MULTI_SAMPLE_SUPPORT && MULTI_SAMPLE_INPUT
+	uint width, height, samples;
+	src_tex_ms.GetDimensions(width, height, samples);
+	int2 coord = tc * int2(width, height);
+
+	float z00 = 0;
+	float z01 = 0;
+	float z10 = 0;
+	float z11 = 0;
+	for (uint i = 0; i < samples; ++ i)
+	{
+		z00 = max(z00, ReadAFloat(src_tex_ms.Load(coord + int2(0, 0), i)));
+		z01 = max(z01, ReadAFloat(src_tex_ms.Load(coord + int2(1, 0), i)));
+		z10 = max(z10, ReadAFloat(src_tex_ms.Load(coord + int2(0, 1), i)));
+		z11 = max(z11, ReadAFloat(src_tex_ms.Load(coord + int2(1, 1), i)));
+	}
+#else
+	float z00 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(-offset.x, -offset.y)));
+	float z01 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(+offset.x, -offset.y)));
+	float z10 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(-offset.x, +offset.y)));
+	float z11 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc * tc_scale + float2(+offset.x, +offset.y)));
+#endif
+
+	float max_depth = z00;
+	max_depth = max(max_depth, z01);
+	max_depth = max(max_depth, z10);
+	max_depth = max(max_depth, z11);
+
+	oColor = 0;
+	oDepth = max_depth;
+}
+		]]>
+	</shader>
+
+	<technique name="DepthToMinMax">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="DepthToMinMaxPS()"/>
+		</pass>
+	</technique>
+	<technique name="ReduceMinMax">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="ReduceMinMaxPS()"/>
+		</pass>
+	</technique>
+
+	<technique name="DepthToMax">
+		<pass name="p0">
+			<state name="depth_enable" value="true"/>
+			<state name="depth_func" value="always_pass"/>
+
+			<state name="color_write_mask" value="0"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="DepthToMaxPS()"/>
+		</pass>
+	</technique>
+	<technique name="DepthToMaxMS" inherit="DepthToMax">
+		<macro name="MULTI_SAMPLE_INPUT" value="1"/>
+	</technique>
+
+
+	<shader>
+		<![CDATA[
+float4 DepthMipmapPointPS(float2 tc : TEXCOORD0) : SV_Target
+{
+	return src_tex.Sample(bias_neg_1_point_sampler, tc);
+}
+
+float4 DepthMipmapBilinearPS(float2 tc : TEXCOORD0) : SV_Target
+{
+	float z00 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc + float2(-offset.x, -offset.y)));
+	float z01 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc + float2(+offset.x, -offset.y)));
+	float z10 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc + float2(-offset.x, +offset.y)));
+	float z11 = ReadAFloat(src_tex.Sample(bias_neg_1_point_sampler, tc + float2(+offset.x, +offset.y)));
+	return WriteAFloat((z00 + z01 + z10 + z11) * 0.25f);
+}
+		]]>
+	</shader>
+
+	<technique name="DepthMipmapPoint">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="DepthMipmapPointPS()"/>
+		</pass>
+	</technique>
+	<technique name="DepthMipmapBilinear">
+		<pass name="p0">
+			<state name="depth_enable" value="false"/>
+			<state name="depth_write_mask" value="false"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="DepthMipmapBilinearPS()"/>
+		</pass>
+	</technique>
+
+
+	<parameter type="int" name="channel"/>
+
+	<shader>
+		<![CDATA[
+void CopyToDepthPS(float2 tc : TEXCOORD0,
+		out float4 oClr : SV_Target0, out float oDepth : SV_Depth)
+{
+	oClr = 0;
+	oDepth = src_tex.Sample(point_sampler, tc)[channel];
+}
+		]]>
+	</shader>
+
+	<technique name="CopyToDepth">
+		<pass name="p0">
+			<state name="depth_enable" value="true"/>
+			<state name="depth_func" value="always_pass"/>
+
+			<state name="color_write_mask" value="0"/>
+
+			<state name="vertex_shader" value="PostProcessVS()"/>
+			<state name="pixel_shader" value="CopyToDepthPS()"/>
+		</pass>
+	</technique>
+</effect>

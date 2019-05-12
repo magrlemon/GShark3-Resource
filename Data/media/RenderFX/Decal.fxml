@@ -1,0 +1,82 @@
+<?xml version='1.0'?>
+
+<effect>
+	<include name="GBuffer.fxml"/>
+	<include name="util.fxml"/>
+
+	<macro name="NORMAL_THRESHOLD" value="0.7"/>
+
+	<parameter type="texture2D" name="g_buffer_rt0_tex"/>
+
+	<shader>
+		<![CDATA[
+void DecalGBufferVS(float4 pos : POSITION,
+			out float4 oTexCoord_2xy : TEXCOORD0,
+			out float4 oTsToView0_2z : TEXCOORD1,
+			out float4 oTsToView1_Depth : TEXCOORD2,
+			out SS_TEXCOORD_TYPE oScreenTc : TEXCOORD3,
+			out float3 oViewDir : TEXCOORD4,
+			out float4 oPos : SV_Position)
+{
+	oPos = mul(pos, mvp);
+	oTexCoord_2xy.xy = float2(pos.x * 0.5f + 0.5f, GRAPHIC_FLIPPING * pos.y * 0.5f + 0.5f);
+
+	float3x3 obj_to_ts;
+	obj_to_ts[0] = float3(1, 0, 0);
+	obj_to_ts[1] = float3(0, -1, 0);
+	obj_to_ts[2] = float3(0, 0, -1);
+	float3x3 ts_to_view = mul(obj_to_ts, (float3x3)model_view);
+	oTsToView0_2z.xyz = ts_to_view[0];
+	oTsToView1_Depth.xyz = ts_to_view[1];
+	oTexCoord_2xy.zw = ts_to_view[2].xy;
+	oTsToView0_2z.w = ts_to_view[2].z;
+	
+	oTsToView1_Depth.w = oPos.w;
+	
+	oScreenTc = EncodeSSTexcoord(oPos);
+
+	oViewDir = mul(pos, model_view).xyz;
+}
+
+void DecalGBufferAlphaTestMRTPS(float4 texcoord_2xy : TEXCOORD0, float4 ts_to_view0_2z : TEXCOORD1, float3 ts_to_view1 : TEXCOORD2,
+					SS_TEXCOORD_TYPE ss_tc : TEXCOORD3,
+					float3 view_dir : TEXCOORD4,
+					out float4 rt0 : SV_Target0, out float4 rt1 : SV_Target1)
+{
+	float2 screen_tc = DecodeSSTexcoord(ss_tc);
+
+	float3 pos_es = view_dir * (opaque_depth_tex.Sample(point_sampler, screen_tc).x / view_dir.z);
+
+	float3 decal_normal = normalize(float3(texcoord_2xy.zw, ts_to_view0_2z.w));
+	float3 pixel_normal = GetNormal(g_buffer_rt0_tex.Sample(bilinear_sampler, screen_tc));
+	clip(dot(decal_normal, pixel_normal) - NORMAL_THRESHOLD);
+
+	float4 decal_pos = mul(float4(pos_es, 1), inv_mv);
+	if (any(abs(decal_pos.xyz) > decal_pos.w))
+	{
+		discard;
+	}
+
+	decal_pos /= decal_pos.w;
+	texcoord_2xy.xy = float2(decal_pos.x, -decal_pos.y) * 0.5f + 0.5f;
+
+	float opacity = albedo_clr.a;
+	if (albedo_map_enabled)
+	{
+		opacity *= albedo_tex.Sample(bilinear_sampler, texcoord_2xy.xy).a;
+	}
+	clip(opacity - alpha_test_threshold);
+	ConstructMRTGBuffer(1, texcoord_2xy, ts_to_view0_2z, ts_to_view1, rt0, rt1);
+}
+		]]>
+	</shader>
+
+	<technique name="DecalGBufferAlphaTestMRTTech">
+		<pass name="p0">
+			<state name="depth_write_mask" value="0"/>
+
+			<state name="vertex_shader" value="DecalGBufferVS()"/>
+			<state name="pixel_shader" value="DecalGBufferAlphaTestMRTPS()"/>
+		</pass>
+	</technique>
+</effect>
