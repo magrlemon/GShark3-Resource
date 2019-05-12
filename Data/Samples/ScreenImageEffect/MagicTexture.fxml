@@ -1,0 +1,205 @@
+<?xml version='1.0'?>
+
+<effect>
+	<include name="util.fxml"/>
+  <include name="Quaternion.fxml"/>
+  <include name="Lighting.fxml"/>
+
+  <cbuffer name="per_frame">
+	<parameter type="float4x4" name="view"/>
+	<parameter type="float4x4" name="proj"/>
+    <parameter type="float4x4" name="mvp"/>
+    <parameter type="float3" name="eye_pos"/>
+    <parameter type="float3" name="light_color"/>
+    <parameter type="float3" name="light_falloff"/>
+	<parameter type="float" name="iTime"/>
+	
+  </cbuffer>
+
+	<parameter type="float2" name="iResolution" x="640" y="360"/>
+	<parameter type="float3" name="LightPos" x="0" y="10" z="3"/>
+	<parameter type="texture2D" name="magic_tex"/>
+	<parameter type="texture2D" name="modulate_tex">
+		<annotation type="string" name="SasResourceAddress" value="backgroud.dds"/>
+	</parameter>
+	<parameter type="sampler" name="magic_tex_sampler">
+		<state name="filtering" value="min_mag_linear_mip_point"/>
+		<state name="address_u" value="wrap"/>
+		<state name="address_v" value="wrap"/>
+		<state name="max_anisotropy" value="8"/>
+	</parameter>
+
+	<shader>
+		<![CDATA[
+
+float eb(float x) {
+    x = 1. - x;
+    float y = x*x*(3.*x-2.);
+    return 1. - y;
+}
+float rand(float2 co){
+    return frac(sin(dot(co.xy, float2(12.9898,78.233))) * 43758.5453);
+}
+
+float getBound(float2 seed, float i) {
+    float p = rand(seed.xy + 1.);
+    if(i < 1.) {
+    	return rand(seed) * 0.1 + 0.4;
+    }
+    if(i > 1.0) {
+	    if(p < 0.07) return 0.;
+    	if(p > 0.93) return 1.;
+    }
+    return rand(seed) * 0.4 + 0.3;
+}
+float getBound(float2 seed1, float2 seed2, float intv, float i) {
+    float v1 = getBound(seed1, i);
+    float v2 = getBound(seed2, i);
+    return lerp(v1,v2,eb(clamp(intv*2.0-i*0.3-rand(seed1)*0.2,0.,1.)));
+}
+
+void mainImage( float2 fragCoord ,
+				out float4 fragColor){
+    //// 将坐标转换到0-1之间
+    float2 uv =  (fragCoord -float2(0.5,0.5))* 15;
+    float2 ouv = uv;
+    float3 col = float3(1,1,1);
+    float ti = iTime * 1.0;
+    float2 seed1 = float2(floor(ti),1);
+    float2 seed2 = float2(floor(ti)+1.0,1);
+    float2 le1 = float2(floor(rand(seed1.yx)*6.),floor(rand(seed1.xx)*6.))/6.;
+    float2 le2 = float2(floor(rand(seed2.yx)*6.),floor(rand(seed2.xx)*6.))/6.;
+
+    float intv = frac(ti);
+    float ttv = intv;
+    if(abs(uv.x) > 2.0 || abs(uv.y) > 1.0)
+	{
+    } 
+	else 
+	{
+        float dif = 1.0;
+        uv = uv * float2(0.25,0.5) + 0.5;
+        float2 center1 = float2(0.5,0.5);
+        float2 size1 = float2(1,1);
+        float2 center2 = float2(0.5,0.5);
+        float2 size2 = float2(1,1);
+        for(int i=0;i<64;i++) 
+	    {
+            float boundX = getBound(seed1,seed2,intv,float(i));
+            float boundX1 = getBound(seed1, float(i));
+            float boundX2 = getBound(seed2, float(i));
+            center1.x -= (0.5 - boundX1) * size1.x;
+            center2.x -= (0.5 - boundX2) * size2.x;
+            if(uv.x < boundX) 
+			      {
+                uv.x /= boundX;
+                seed1.x += dif, seed2.x += dif;
+                size1.x *= boundX1, size2.x *= boundX2;
+                center1.x -= size1.x * 0.5, center2.x -= size2.x * 0.5;
+            }
+			      else 
+			      {
+                uv.x = (uv.x - boundX) / (1. - boundX);
+                seed1.x -= dif, seed2.x -= dif;
+                size1.x *= 1. - boundX1, size2.x *= 1. - boundX2;
+                center1.x += size1.x * 0.5, center2.x += size2.x * 0.5;
+                intv += 0.15 * dif;
+            }
+	        seed1 = seed1.yx;
+	        seed2 = seed2.yx;
+            dif /= 2.0;
+            
+            if(i > 0)
+			      {
+                float boundY = getBound(seed1, seed2, intv, float(i));
+                float boundY1 = getBound(seed1, float(i));
+                float boundY2 = getBound(seed2, float(i));
+                center1.y -= (0.5 - boundY1) * size1.y;
+                center2.y -= (0.5 - boundY2) * size2.y;
+                if(uv.y < boundY) 
+				        {
+                    uv.y /= boundY;
+                    seed1.y += dif, seed2.y += dif;
+                    size1.y *= boundY1, size2.y *= boundY2;
+                    center1.y -= size1.y * 0.5, center2.y -= size2.y * 0.5;
+                }
+				        else
+				        {
+                    uv.y = (uv.y - boundY) / (1. - boundY);
+                    seed1.y -= dif, seed2.y -= dif;
+                    size1.y *= 1. - boundY1, size2.y *= 1. - boundY2;
+                    center1.y += size1.y * 0.5, center2.y += size2.y * 0.5;
+                    intv += 0.15 * dif;
+                }
+            }
+            seed1 = seed1.yx;
+            seed2 = seed2.yx;
+            dif /= 2.0;
+        }
+        float2 coord0 = (center1-float2(0.25,0))/float2(3.0,6.0);
+        float2 coord1 = (center2-float2(0.25,0))/float2(3.0,6.0);
+        coord0 = clamp(coord0, 0., 1./6.);
+        coord1 = clamp(coord1, 0., 1./6.);
+
+		    float4 c0 = magic_tex.Sample(magic_tex_sampler, coord0+le1).xyzw;
+		    float4 c1 = magic_tex.Sample(magic_tex_sampler, coord1+le2).xyzw;
+        ttv = smoothstep(0.,1.,-0.7 + ttv*4.0 - rand(center1)*1.0);
+        float ld = rand(seed1+seed2) < 0.5 ? 1.0 : 0.0;
+        float ldu = rand(seed1-seed2) < 0.5 ? 1.0 : 0.0;
+        float lb = lerp(1.0,-1.0,ldu);
+        float mixParam = 0.0;
+	      if(ld < 0.5){
+			    mixParam = step(uv.x, lb*ttv+ldu); 
+		    }
+		    else{
+			    mixParam =  step(uv.y, lb*ttv+ldu);
+		    }
+        col *=  lerp(c1.x,c0.x,mixParam);
+    }
+    fragColor = float4(col,1.0);
+}
+
+
+void MagicTexVS(float4 Position : POSITION,
+					out float4 oTex0 : TEXCOORD0,
+					out float3 oPosOS : TEXCOORD1,
+					out float3 oNormal : TEXCOORD2,
+					out float2 oDepth : TEXCOORD3,
+					out float4 oPos : SV_Position)
+{
+	float4 pos_es = mul(Position, view);
+	oPos = mul(pos_es, proj);
+	oNormal = float3(0, 1, 0);
+	oPosOS = Position.xyz;
+	oDepth = pos_es.zw;
+	oTex0 = Position.xyxy * 0.5 +0.5;
+}
+
+float4 MagicTexPS(float4 tex0 : TEXCOORD0,
+					float3 pos_os : TEXCOORD1,
+					float3 normal : TEXCOORD2,
+					float2 depth : TEXCOORD3) : SV_Target 
+{
+	float4 fragColor = float4(0,0,0,0.5);
+    mainImage(tex0.xy,fragColor);
+	float3 modulateParams = modulate_tex.Sample(magic_tex_sampler, tex0.xy).xyz;
+  
+    float3 clr = fragColor.x *0.27 + fragColor.y * 0.67 + fragColor.z * 0.06 ;
+	return float4(lerp(clr, modulateParams, 0.105f), 1);
+	//return fragColor;
+}
+		]]>
+	</shader>
+
+
+
+	<technique name="MagicTex">
+		<pass name="p0">
+			<state name="blend_enable" value="true"/>
+			<state name="src_blend" value="src_alpha"/>
+			<state name="dest_blend" value="inv_src_alpha"/>
+			<state name="vertex_shader" value="MagicTexVS()"/>
+			<state name="pixel_shader" value="MagicTexPS()"/>
+		</pass>
+	</technique>
+</effect>
